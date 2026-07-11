@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: The MOD itself is broken (crashes, buggy roles, in-game problems)
+    url: https://discord.gg/ugyc4EVUYZ
+    about: That's a Town of Us question, not a MiraDropper one. Please ask the official TOU support here instead of opening an issue.
+  - name: Read the setup guide first
+    url: https://github.com/Stanfoc/MiraDropper#readme
+    about: You should read the setup guide before opening an issue. Many issues are caused by not following the setup guide, so please read it first. Thanks!

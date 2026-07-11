@@ -1,0 +1,14 @@
+# MiraDropper generated log
+tou-mira-install-log.txt
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS junk
+.DS_Store
+
+# Editor / IDE folders
+.vscode/
+.idea/
