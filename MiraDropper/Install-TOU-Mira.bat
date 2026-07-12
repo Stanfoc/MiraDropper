@@ -526,6 +526,8 @@ if (-not $skipCopy) {
     $totalMB = [math]::Round($totalBytes / 1MB, 0)
 
     # Disk space check
+    # Doubt this will ever run, 
+    # but just in case the user has a tinyest drive in the world. You never know.
     $destDrive = (Get-Item $parentDir).PSDrive.Name
     $freeBytes = (Get-PSDrive $destDrive).Free
     $freeMB = [math]::Round($freeBytes / 1MB, 0)
