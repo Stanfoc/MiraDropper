@@ -1,8 +1,8 @@
 <# : batch portion (this block is ignored by PowerShell, run by cmd.exe)
 @echo off
 REM =========================================================
-REM  MiraDrop - Town of Us: Mira Installer / Updater / Remover
-REM  "Drop-in TOU Mira for Among Us. One file, no fuss."
+REM  MiraDropper - Town of Us: Mira Installer / Updater / Remover
+REM  "Unofficial, easy TOU Mira installer for Among sUs."
 REM  Just double-click this file.
 REM  The batch part below re-launches the file as PowerShell
 REM  with script-blocking disabled, so nothing else is needed.
@@ -228,7 +228,7 @@ function Install-ModFiles {
 
     Write-Host ""
     Log-Info "Version: $chosenTag   Download: $zipName ($zipSizeMB MB)" "Green"
-    if (-not (Confirm-Action "Allow the script to download this file to your Temp folder?")) {
+    if (-not (Confirm-Action "Download $chosenTag now?")) {
         Abort-Clean "Okay, stopping before downloading anything."
     }
 
@@ -264,16 +264,24 @@ function Install-ModFiles {
         Abort-Clean "Download failed after $maxAttempts tries. Check your connection (or GitHub status) and run the script again."
     }
 
-    # --- Verify ---
+    # --- Verify + detect wrapper folder ---
+    # The steam-itch zip usually nests everything inside a single top folder
+    # (e.g. "TouMirav1.6.3b2-x86-steam-itch/BepInEx/..."). We find BepInEx wherever
+    # it lives and strip whatever comes before it, so files land at the game root.
     Log-Debug "Verifying the downloaded zip..."
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zipArchive = [System.IO.Compression.ZipFile]::OpenRead($tempZip)
-    $hasBepInEx = $zipArchive.Entries | Where-Object { $_.FullName -match "^BepInEx/" } | Select-Object -First 1
-    if (-not $hasBepInEx) {
+    $bepEntry = $zipArchive.Entries | Where-Object { $_.FullName -match "(^|/)BepInEx/" } | Select-Object -First 1
+    if (-not $bepEntry) {
         $zipArchive.Dispose(); Remove-Item $tempZip -Force
         Log-Info "That download didn't contain a BepInEx folder -- it may be corrupted or the wrong file." "Red"
         Abort-Clean "Nothing was installed. Try running the script again."
     }
+    # Everything before "BepInEx/" is the wrapper prefix ("" if it's already at the root).
+    $idx = $bepEntry.FullName.IndexOf("BepInEx/")
+    $stripPrefix = $bepEntry.FullName.Substring(0, $idx)
+    if ($stripPrefix) { Log-Debug "Zip has a wrapper folder; will strip: '$stripPrefix'" }
+    else { Log-Debug "Zip has BepInEx at the root; no prefix to strip." }
     Log-Debug "Verified: BepInEx folder present in zip."
 
     # --- Extract ---
@@ -292,7 +300,13 @@ function Install-ModFiles {
     $i = 0
     foreach ($entry in $entries) {
         $i++
-        $destPath = Join-Path $moddedPath $entry.FullName
+        # Strip the wrapper prefix so contents land at the game root, not one level deep.
+        $relPath = $entry.FullName
+        if ($stripPrefix -and $relPath.StartsWith($stripPrefix)) {
+            $relPath = $relPath.Substring($stripPrefix.Length)
+        }
+        if ([string]::IsNullOrWhiteSpace($relPath)) { continue }  # skip the wrapper dir entry itself
+        $destPath = Join-Path $moddedPath $relPath
         $destDir = Split-Path $destPath -Parent
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destPath, $true)
@@ -336,7 +350,11 @@ function Install-ModFiles {
     if (Confirm-Action "Launch the modded Among Us now to verify it worked?") {
         Start-Process (Join-Path $moddedPath "Among Us.exe")
         Write-Host ""
+        Write-Host "Launching the game might take a while the first time, as BepInEx sets up its files." -ForegroundColor Yellow
         Write-Host "If it opens with the Town of Us: Mira logo in the top-left corner, you're all set!" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Make a github issue in the MiraDropper repo if it doesn't launch or crashes, and include the log file." -ForegroundColor Yellow
+        Write-Host "But if after the first launch things aren't working in the game, make a github issue in the TOU:Mira repo instead." -ForegroundColor Yellow
     } else {
         Write-Host "You can launch it anytime from the Desktop shortcut or:" -ForegroundColor Cyan
         Write-Host "  $moddedPath\Among Us.exe"
@@ -370,7 +388,7 @@ function Ensure-GameClosed {
     } else { Log-Debug "Among Us not running. Good." }
 }
 
-Write-Host "=== MiraDrop - Town of Us: Mira Tool ===" -ForegroundColor Cyan
+Write-Host "=== MiraDropper - Town of Us: Mira Tool ===" -ForegroundColor Cyan
 Write-Host ""
 Log-Debug "Log file created at $LogPath"
 
@@ -449,7 +467,7 @@ if ($mode -eq "2") {
 }
 
 # =========================================================
-#  MODE 1: INSTALL (fresh)
+#  MODE 1: INSTALL
 # =========================================================
 Write-Host ""
 Log-Info "=== Install mode ===" "Cyan"
@@ -512,6 +530,8 @@ if (-not $skipCopy) {
     $totalMB = [math]::Round($totalBytes / 1MB, 0)
 
     # Disk space check
+    # Doubt this will ever run, 
+    # but just in case the user has a tinyest drive in the world. You never know.
     $destDrive = (Get-Item $parentDir).PSDrive.Name
     $freeBytes = (Get-PSDrive $destDrive).Free
     $freeMB = [math]::Round($freeBytes / 1MB, 0)
