@@ -350,7 +350,11 @@ function Install-ModFiles {
     if (Confirm-Action "Launch the modded Among Us now to verify it worked?") {
         Start-Process (Join-Path $moddedPath "Among Us.exe")
         Write-Host ""
+        Write-Host "Launching the game might take a while the first time, as BepInEx sets up its files." -ForegroundColor Yellow
         Write-Host "If it opens with the Town of Us: Mira logo in the top-left corner, you're all set!" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Make a github issue in the MiraDropper repo if it doesn't launch or crashes, and include the log file." -ForegroundColor Yellow
+        Write-Host "But if after the first launch things aren't working in the game, make a github issue in the TOU:Mira repo instead." -ForegroundColor Yellow
     } else {
         Write-Host "You can launch it anytime from the Desktop shortcut or:" -ForegroundColor Cyan
         Write-Host "  $moddedPath\Among Us.exe"
