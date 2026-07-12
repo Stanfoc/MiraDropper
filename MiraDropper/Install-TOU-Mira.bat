@@ -70,10 +70,45 @@ function Abort-Clean {
 }
 
 # ---------------------------------------------------------
+#  Shared: remember the last-used paths across runs.
+#  Pure convenience cache -- any failure here must never
+#  break the actual install/update/remove flow.
+# ---------------------------------------------------------
+function Load-MiraConfig {
+    $path = Join-Path $env:LOCALAPPDATA "MiraDropper\config.json"
+    try {
+        if (Test-Path $path) { return (Get-Content $path -Raw | ConvertFrom-Json) }
+    } catch { Log-Debug "Couldn't read saved config, ignoring: $($_.Exception.Message)" }
+    return $null
+}
+function Save-MiraConfig {
+    param([string]$auPath, [string]$moddedPath)
+    try {
+        $dir = Join-Path $env:LOCALAPPDATA "MiraDropper"
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        [PSCustomObject]@{ AmongUsPath = $auPath; ModdedPath = $moddedPath; LastUpdated = (Get-Date -Format o) } |
+            ConvertTo-Json | Out-File -FilePath (Join-Path $dir "config.json") -Encoding UTF8 -Force
+    } catch { Log-Debug "Couldn't save config (non-critical): $($_.Exception.Message)" }
+}
+
+# ---------------------------------------------------------
 #  Shared: locate the Among Us install
 # ---------------------------------------------------------
 function Find-AmongUs {
     $auPath = $null
+    if ($script:MiraConfig -and $script:MiraConfig.AmongUsPath) {
+        $rememberedPath = $script:MiraConfig.AmongUsPath
+        if (Test-Path (Join-Path $rememberedPath "Among Us.exe")) {
+            Write-Host ""
+            Log-Info "Remembered from last time:" "Green"
+            Write-Host "  $rememberedPath"
+            if (Confirm-Action "Use the same Among Us folder as last time?") {
+                return $rememberedPath
+            }
+        } else {
+            Log-Debug "Remembered path no longer has Among Us.exe -- ignoring it: $rememberedPath"
+        }
+    }
     $doAuto = Confirm-Action "Want the script to auto-detect your Among Us folder? (n = you'll type the path yourself)"
     if ($doAuto) {
         Log-Debug "Auto-detect selected. Reading Steam library folders..."
@@ -465,6 +500,7 @@ Write-Host "=== MiraDropper - Town of Us: Mira Tool ===" -ForegroundColor Cyan
 Write-Host ""
 Log-Debug "Log file created at $LogPath"
 Test-ForNewerScript
+$script:MiraConfig = Load-MiraConfig
 
 # ---------------------------------------------------------
 #  Mode select
@@ -524,6 +560,7 @@ if ($mode -eq "2") {
     if (-not (Test-Path $moddedPath)) {
         Abort-Clean "No modded folder found at '$moddedPath'. Run this tool again and choose [1] Install first."
     }
+    Save-MiraConfig $auPath $moddedPath
     $stamp = Join-Path $moddedPath ".tou-mira-version.txt"
     if (Test-Path $stamp) {
         Log-Info "Currently installed: $((Get-Content $stamp -Raw).Trim())" "Cyan"
@@ -569,6 +606,7 @@ Log-Info "Using Among Us at: $auPath" "Green"
 $parentDir = Split-Path $auPath -Parent
 $moddedPath = Join-Path $parentDir "Among Us - TOU Mira"
 Log-Debug "Modded install target: $moddedPath"
+Save-MiraConfig $auPath $moddedPath
 
 $stagingCopyPath = "$moddedPath.partial"
 if (Test-Path $stagingCopyPath) {
