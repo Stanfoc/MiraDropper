@@ -228,7 +228,7 @@ function Install-ModFiles {
 
     Write-Host ""
     Log-Info "Version: $chosenTag   Download: $zipName ($zipSizeMB MB)" "Green"
-    if (-not (Confirm-Action "Allow the script to download this file to your Temp folder?")) {
+    if (-not (Confirm-Action "Download $chosenTag now?")) {
         Abort-Clean "Okay, stopping before downloading anything."
     }
 
