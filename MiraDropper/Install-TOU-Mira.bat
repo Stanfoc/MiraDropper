@@ -1,8 +1,8 @@
 <# : batch portion (this block is ignored by PowerShell, run by cmd.exe)
 @echo off
 REM =========================================================
-REM  MiraDrop - Town of Us: Mira Installer / Updater / Remover
-REM  "Drop-in TOU Mira for Among Us. One file, no fuss."
+REM  MiraDropper - Town of Us: Mira Installer / Updater / Remover
+REM  "Unofficial, easy TOU Mira installer for Among sUs."
 REM  Just double-click this file.
 REM  The batch part below re-launches the file as PowerShell
 REM  with script-blocking disabled, so nothing else is needed.
@@ -264,16 +264,24 @@ function Install-ModFiles {
         Abort-Clean "Download failed after $maxAttempts tries. Check your connection (or GitHub status) and run the script again."
     }
 
-    # --- Verify ---
+    # --- Verify + detect wrapper folder ---
+    # The steam-itch zip usually nests everything inside a single top folder
+    # (e.g. "TouMirav1.6.3b2-x86-steam-itch/BepInEx/..."). We find BepInEx wherever
+    # it lives and strip whatever comes before it, so files land at the game root.
     Log-Debug "Verifying the downloaded zip..."
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zipArchive = [System.IO.Compression.ZipFile]::OpenRead($tempZip)
-    $hasBepInEx = $zipArchive.Entries | Where-Object { $_.FullName -match "^BepInEx/" } | Select-Object -First 1
-    if (-not $hasBepInEx) {
+    $bepEntry = $zipArchive.Entries | Where-Object { $_.FullName -match "(^|/)BepInEx/" } | Select-Object -First 1
+    if (-not $bepEntry) {
         $zipArchive.Dispose(); Remove-Item $tempZip -Force
         Log-Info "That download didn't contain a BepInEx folder -- it may be corrupted or the wrong file." "Red"
         Abort-Clean "Nothing was installed. Try running the script again."
     }
+    # Everything before "BepInEx/" is the wrapper prefix ("" if it's already at the root).
+    $idx = $bepEntry.FullName.IndexOf("BepInEx/")
+    $stripPrefix = $bepEntry.FullName.Substring(0, $idx)
+    if ($stripPrefix) { Log-Debug "Zip has a wrapper folder; will strip: '$stripPrefix'" }
+    else { Log-Debug "Zip has BepInEx at the root; no prefix to strip." }
     Log-Debug "Verified: BepInEx folder present in zip."
 
     # --- Extract ---
@@ -292,7 +300,13 @@ function Install-ModFiles {
     $i = 0
     foreach ($entry in $entries) {
         $i++
-        $destPath = Join-Path $moddedPath $entry.FullName
+        # Strip the wrapper prefix so contents land at the game root, not one level deep.
+        $relPath = $entry.FullName
+        if ($stripPrefix -and $relPath.StartsWith($stripPrefix)) {
+            $relPath = $relPath.Substring($stripPrefix.Length)
+        }
+        if ([string]::IsNullOrWhiteSpace($relPath)) { continue }  # skip the wrapper dir entry itself
+        $destPath = Join-Path $moddedPath $relPath
         $destDir = Split-Path $destPath -Parent
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destPath, $true)
@@ -370,7 +384,7 @@ function Ensure-GameClosed {
     } else { Log-Debug "Among Us not running. Good." }
 }
 
-Write-Host "=== MiraDrop - Town of Us: Mira Tool ===" -ForegroundColor Cyan
+Write-Host "=== MiraDropper - Town of Us: Mira Tool ===" -ForegroundColor Cyan
 Write-Host ""
 Log-Debug "Log file created at $LogPath"
 
