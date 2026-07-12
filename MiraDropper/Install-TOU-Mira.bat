@@ -264,6 +264,23 @@ function Install-ModFiles {
         Abort-Clean "Download failed after $maxAttempts tries. Check your connection (or GitHub status) and run the script again."
     }
 
+    # Checksum 
+    # github reports a sha256 digest for release assets; verify it when present.
+    # This is an independent check from the BepInEx folder check
+    if ($asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
+        $expectedHash = $Matches[1].ToLower()
+        Log-Debug "Verifying SHA-256 checksum against GitHub-reported digest..."
+        $actualHash = (Get-FileHash -Path $tempZip -Algorithm SHA256).Hash.ToLower()
+        if ($actualHash -ne $expectedHash) {
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            Log-Info "Checksum mismatch! Expected $expectedHash, got $actualHash." "Red"
+            Abort-Clean "The download looks corrupted or tampered with. Try running the script again."
+        }
+        Log-Info "Checksum verified." "Green"
+    } else {
+        Log-Debug "No 'digest' field on this asset -- skipping checksum check (BepInEx-presence check below still applies)."
+    }
+
     # --- Verify + detect wrapper folder ---
     # The steam-itch zip usually nests everything inside a single top folder
     # (e.g. "TouMirav1.6.3b2-x86-steam-itch/BepInEx/..."). We find BepInEx wherever
