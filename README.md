@@ -1,4 +1,4 @@
-# **MiraDropper
+# **MiraDropper**
 
 **An UNOFFICIAL, easy to use Town of Us: Mira installer for Among Us.**
 
