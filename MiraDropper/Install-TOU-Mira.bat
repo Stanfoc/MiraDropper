@@ -50,7 +50,7 @@ function Log-Info {
     "[INFO ] $msg" | Out-File -FilePath $LogPath -Append -Encoding UTF8
 }
 function Confirm-Action {
-    param([string]$msg)
+    param([string]$msg, [switch]$Destructive)
     $resp = Read-Host "$msg (y/n)"
     while ($resp -notmatch '^[yYnN]$') { $resp = Read-Host "Please type y or n" }
     $yes = ($resp -match '^[yY]$')
@@ -513,6 +513,19 @@ $parentDir = Split-Path $auPath -Parent
 $moddedPath = Join-Path $parentDir "Among Us - TOU Mira"
 Log-Debug "Modded install target: $moddedPath"
 
+$stagingCopyPath = "$moddedPath.partial"
+if (Test-Path $stagingCopyPath) {
+    Write-Host ""
+    Write-Host "It looks like a previous install was interrupted and leftover partial copy was found:" -ForegroundColor Yellow
+    Write-Host "  $stagingCopyPath"
+    if (Confirm-Action "Delete this leftover partial copy and start the game-file copy fresh?" -Destructive) {
+        Remove-Item $stagingCopyPath -Recurse -Force
+        Log-Info "Removed leftover partial copy." "Green"
+    } else {
+        Abort-Clean "leaving the leftover partial copy in place. Run again when ready."
+    }
+}
+
 $skipCopy = $false
 if (Test-Path $moddedPath) {
     Write-Host ""
@@ -533,7 +546,7 @@ if (Test-Path $moddedPath) {
         "2" {
             if (Confirm-Action "Really DELETE the whole modded folder and re-copy?") {
                 Log-Info "Deleting old modded folder..." "Yellow"; Remove-Item $moddedPath -Recurse -Force
-            } else { Abort-Clean "Okay, leaving it as-is and stopping." }
+            } else { Abort-Clean "Okay, leaving it as is and stopping." }
         }
         "3" { Abort-Clean "Cancelled." }
     }
@@ -572,12 +585,14 @@ if (-not $skipCopy) {
         Abort-Clean "Okay, stopping before any files were copied."
     }
     Log-Info "Copying $totalFiles files (~$totalMB MB)..." "Cyan"
-    New-Item -ItemType Directory -Path $moddedPath -Force | Out-Null
+    # Copy into a staging dir first, then commit via rename -- so an interrupted
+    # copy never leaves a half-written folder sitting under the final name.
+    New-Item -ItemType Directory -Path $stagingCopyPath -Force | Out-Null
     $i = 0
     foreach ($file in $allFiles) {
         $i++
         $relativePath = $file.FullName.Substring($auPath.Length).TrimStart('\')
-        $destPath = Join-Path $moddedPath $relativePath
+        $destPath = Join-Path $stagingCopyPath $relativePath
         $destDir = Split-Path $destPath -Parent
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
         Copy-Item -Path $file.FullName -Destination $destPath -Force
@@ -587,6 +602,8 @@ if (-not $skipCopy) {
         }
     }
     Write-Progress -Activity "Copying Among Us files" -Completed
+    Log-Debug "Copy finished in staging; committing to final path..."
+    Move-Item -Path $stagingCopyPath -Destination $moddedPath -Force
     Log-Info "Copy complete: $totalFiles files." "Green"
 }
 
