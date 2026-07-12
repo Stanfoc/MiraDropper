@@ -161,6 +161,19 @@ function Remove-OldMod {
 function Install-ModFiles {
     param([string]$moddedPath)
 
+    # Sweep any stale staging dirs left behind by a previous interrupted run.
+    Get-ChildItem -Path $env:TEMP -Filter "MiraDropper-stage-*" -Directory -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+    # If a previous run got interrupted mid-overlay, the modded folder may have a
+    # half-applied mod. Clean it up before installing fresh.
+    $installMarker = Join-Path $moddedPath ".tou-mira-installing"
+    if (Test-Path $installMarker) {
+        Log-Info "Detected an incomplete mod install from a previous run in this folder. Cleaning up old mod files before reinstalling." "Yellow"
+        Remove-OldMod $moddedPath
+        Remove-Item $installMarker -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host ""
     Log-Info "Fetching the recent Town of Us: Mira releases from GitHub..." "Cyan"
     Log-Debug "GET https://api.github.com/repos/AU-Avengers/TOU-Mira/releases"
@@ -311,6 +324,10 @@ function Install-ModFiles {
         Log-Info "Downloaded zip is still in your Temp folder if you want it: $tempZip" "Cyan"
         Abort-Clean "Okay, stopping before any mod files were installed."
     }
+    # Extract into a temp staging dir first, not live into $moddedPath -- so an
+    # interrupted extraction never leaves the modded folder half-overwritten.
+    $stagePath = Join-Path $env:TEMP "MiraDropper-stage-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $stagePath -Force | Out-Null
     $entries = $zipArchive.Entries | Where-Object { $_.Name -ne "" }
     $totalEntries = $entries.Count
     Log-Info "Extracting $totalEntries files..." "Cyan"
@@ -323,7 +340,7 @@ function Install-ModFiles {
             $relPath = $relPath.Substring($stripPrefix.Length)
         }
         if ([string]::IsNullOrWhiteSpace($relPath)) { continue }  # skip the wrapper dir entry itself
-        $destPath = Join-Path $moddedPath $relPath
+        $destPath = Join-Path $stagePath $relPath
         $destDir = Split-Path $destPath -Parent
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destPath, $true)
@@ -334,6 +351,19 @@ function Install-ModFiles {
     }
     $zipArchive.Dispose()
     Write-Progress -Activity "Extracting mod files" -Completed
+
+    if (-not (Test-Path (Join-Path $stagePath "BepInEx"))) {
+        Remove-Item $stagePath -Recurse -Force -ErrorAction SilentlyContinue
+        Log-Info "Staged extraction didn't produce a BepInEx folder -- something went wrong." "Red"
+        Abort-Clean "Nothing was installed. Try running the script again."
+    }
+
+    # Commit: mark the folder as mid-install, overlay the staged files, then clear the marker.
+    # This keeps the risky window (touching the live modded folder) as short as possible.
+    "in-progress" | Out-File -FilePath $installMarker -Encoding UTF8 -Force
+    Copy-Item -Path (Join-Path $stagePath '*') -Destination $moddedPath -Recurse -Force
+    Remove-Item $installMarker -Force -ErrorAction SilentlyContinue
+    Remove-Item $stagePath -Recurse -Force -ErrorAction SilentlyContinue
     Log-Info "Install complete: $totalEntries files." "Green"
 
     $chosenTag | Out-File -FilePath $versionFile -Encoding UTF8 -Force
