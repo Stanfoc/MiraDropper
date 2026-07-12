@@ -25,6 +25,7 @@ $ErrorActionPreference = "Stop"
 
 # Bump this by hand to match each MiraDropper release's version name (e.g. "v1.2.0" -> "1.2.0").
 $ScriptVersion = "1.1.0"
+$script:AutoConfirm = $false
 
 # ---------------------------------------------------------
 #  Logging setup
@@ -54,6 +55,11 @@ function Log-Info {
 }
 function Confirm-Action {
     param([string]$msg, [switch]$Destructive)
+    if ($script:AutoConfirm -and -not $Destructive) {
+        Log-Debug "(advanced mode off) auto-confirmed: $msg"
+        "[PROMPT] $msg -> AUTO-YES (advanced mode off)" | Out-File -FilePath $LogPath -Append -Encoding UTF8
+        return $true
+    }
     $resp = Read-Host "$msg (y/n)"
     while ($resp -notmatch '^[yYnN]$') { $resp = Read-Host "Please type y or n" }
     $yes = ($resp -match '^[yY]$')
@@ -513,6 +519,9 @@ $mode = Read-Host "Choose 1, 2, or 3"
 while ($mode -notmatch '^[123]$') { $mode = Read-Host "Please type 1, 2, or 3" }
 Log-Debug "Mode selected: $mode"
 
+$useAdvancedMode = Confirm-Action "Use advanced mode for this run? (autoconfirm prompts but destructive actions still ask)"
+$script:AutoConfirm = -not $useAdvancedMode
+
 # =========================================================
 #  MODE 3: REMOVE
 # =========================================================
@@ -528,7 +537,7 @@ if ($mode -eq "3") {
     Write-Host "This will DELETE the modded folder:" -ForegroundColor Yellow
     Write-Host "  $moddedPath"
     Write-Host "Your original (vanilla) Among Us install will NOT be touched."
-    if (-not (Confirm-Action "Are you sure you want to delete the modded copy?")) {
+    if (-not (Confirm-Action "Are you sure you want to delete the modded copy?" -Destructive)) {
         Abort-Clean "Okay, left everything in place."
     }
     Ensure-GameClosed
@@ -537,7 +546,7 @@ if ($mode -eq "3") {
     Log-Info "Modded folder removed." "Green"
     $shortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "Among Us (TOU Mira).lnk"
     if (Test-Path $shortcutPath) {
-        if (Confirm-Action "Also remove the 'Among Us (TOU Mira)' desktop shortcut?") {
+        if (Confirm-Action "Also remove the 'Among Us (TOU Mira)' desktop shortcut?" -Destructive) {
             Remove-Item $shortcutPath -Force; Log-Info "Shortcut removed." "Green"
         }
     }
@@ -639,7 +648,7 @@ if (Test-Path $moddedPath) {
             Remove-OldMod $moddedPath
         }
         "2" {
-            if (Confirm-Action "Really DELETE the whole modded folder and re-copy?") {
+            if (Confirm-Action "Really DELETE the whole modded folder and re-copy?" -Destructive) {
                 Log-Info "Deleting old modded folder..." "Yellow"; Remove-Item $moddedPath -Recurse -Force
             } else { Abort-Clean "Okay, leaving it as is and stopping." }
         }
