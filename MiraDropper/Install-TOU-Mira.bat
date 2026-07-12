@@ -23,6 +23,9 @@ exit /b
 
 $ErrorActionPreference = "Stop"
 
+# Bump this by hand to match each MiraDropper release's version name (e.g. "v1.2.0" -> "1.2.0").
+$ScriptVersion = "1.1.0"
+
 # ---------------------------------------------------------
 #  Logging setup
 # ---------------------------------------------------------
@@ -435,9 +438,33 @@ function Ensure-GameClosed {
     } else { Log-Debug "Among Us not running. Good." }
 }
 
+# ---------------------------------------------------------
+#  Shared: check whether a newer MiraDropper is available.
+#  Notify-only -- never touches the running script file.
+# ---------------------------------------------------------
+function Test-ForNewerScript {
+    try {
+        $headers = @{ "User-Agent" = "PowerShell" }
+        $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/Stanfoc/MiraDropper/releases/latest" -Headers $headers -TimeoutSec 5
+        $latestVerText = ($latest.name -replace '^[vV]\s*', '').Trim()
+        $latestVer = [version]$latestVerText
+        $currentVer = [version]$ScriptVersion
+        if ($latestVer -gt $currentVer) {
+            Write-Host ""
+            Log-Info "A newer MiraDropper is available: $($latest.name) (you have v$ScriptVersion)." "Yellow"
+            Write-Host "  Get it here: $($latest.html_url)" -ForegroundColor Yellow
+        } else {
+            Log-Debug "MiraDropper is up to date (v$ScriptVersion)."
+        }
+    } catch {
+        Log-Debug "Self-update check skipped: $($_.Exception.Message)"
+    }
+}
+
 Write-Host "=== MiraDropper - Town of Us: Mira Tool ===" -ForegroundColor Cyan
 Write-Host ""
 Log-Debug "Log file created at $LogPath"
+Test-ForNewerScript
 
 # ---------------------------------------------------------
 #  Mode select
