@@ -24,7 +24,7 @@ exit /b
 $ErrorActionPreference = "Stop"
 
 # Bump this by hand to match each MiraDropper release's version name (e.g. "v1.2.0" -> "1.2.0").
-$ScriptVersion = "1.1.0"
+$ScriptVersion = "2.0.0"
 $script:AutoConfirm = $false
 
 # =========================================================
@@ -80,7 +80,7 @@ $Providers = @(
     },
     [PSCustomObject]@{
         Id = "itch"
-        Name = "itch.io"
+        Name = "itch.io (EXPERIMENTAL)"
         AssetPattern = "steam-itch\.zip$"
         DowngradeSteps = @(
             "Right-click Among Us in your itch library -> Manage -> 'Switch to another version...'",
@@ -127,8 +127,8 @@ function Log-Info {
     "[INFO ] $msg" | Out-File -FilePath $LogPath -Append -Encoding UTF8
 }
 function Confirm-Action {
-    param([string]$msg, [switch]$Destructive)
-    if ($script:AutoConfirm -and -not $Destructive) {
+    param([string]$msg, [switch]$AlwaysAsk)
+    if ($script:AutoConfirm -and -not $AlwaysAsk) {
         Log-Debug "(advanced mode off) auto-confirmed: $msg"
         "[PROMPT] $msg -> AUTO-YES (advanced mode off)" | Out-File -FilePath $LogPath -Append -Encoding UTF8
         return $true
@@ -600,7 +600,7 @@ if ($mode -eq "3") {
     Write-Host "This will DELETE the modded folder:" -ForegroundColor Yellow
     Write-Host "  $moddedPath"
     Write-Host "Your original (vanilla) Among Us install will NOT be touched."
-    if (-not (Confirm-Action "Are you sure you want to delete the modded copy?" -Destructive)) {
+    if (-not (Confirm-Action "Are you sure you want to delete the modded copy?" -AlwaysAsk)) {
         Abort-Clean "Okay, left everything in place."
     }
     Ensure-GameClosed
@@ -609,7 +609,7 @@ if ($mode -eq "3") {
     Log-Info "Modded folder removed." "Green"
     $shortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "Among Us (TOU Mira).lnk"
     if (Test-Path $shortcutPath) {
-        if (Confirm-Action "Also remove the 'Among Us (TOU Mira)' desktop shortcut?" -Destructive) {
+        if (Confirm-Action "Also remove the 'Among Us (TOU Mira)' desktop shortcut?" -AlwaysAsk) {
             Remove-Item $shortcutPath -Force; Log-Info "Shortcut removed." "Green"
         }
     }
@@ -678,7 +678,7 @@ if ($script:SelectedProvider.Id -eq "steam") {
         catch { Log-Debug "Couldn't launch Steam URI: $($_.Exception.Message)" }
     }
 }
-if (-not (Confirm-Action "Have you done the downgrade already?")) {
+if (-not (Confirm-Action "Have you done the downgrade already?" -AlwaysAsk)) {
     Abort-Clean "No worries -- go do that first, then run this again."
 }
 Write-Host ""
@@ -700,7 +700,7 @@ if (Test-Path $stagingCopyPath) {
     Write-Host ""
     Write-Host "It looks like a previous install was interrupted and leftover partial copy was found:" -ForegroundColor Yellow
     Write-Host "  $stagingCopyPath"
-    if (Confirm-Action "Delete this leftover partial copy and start the game-file copy fresh?" -Destructive) {
+    if (Confirm-Action "Delete this leftover partial copy and start the game-file copy fresh?" -AlwaysAsk) {
         Remove-Item $stagingCopyPath -Recurse -Force
         Log-Info "Removed leftover partial copy." "Green"
     } else {
@@ -726,7 +726,7 @@ if (Test-Path $moddedPath) {
             Remove-OldMod $moddedPath
         }
         "2" {
-            if (Confirm-Action "Really DELETE the whole modded folder and re-copy?" -Destructive) {
+            if (Confirm-Action "Really DELETE the whole modded folder and re-copy?" -AlwaysAsk) {
                 Log-Info "Deleting old modded folder..." "Yellow"; Remove-Item $moddedPath -Recurse -Force
             } else { Abort-Clean "Okay, leaving it as is and stopping." }
         }
