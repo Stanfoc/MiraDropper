@@ -12,35 +12,21 @@ MiraDropper is a single double-click file that installs [Town of Us: Mira](https
 
 ## Requirements
 
-- **Among Us on Steam** (this installer is Steam-only)
+- **Among Us on Steam or Itch (experimental Itch.io may have bugs please make a issue if you find them) **
 - A Windows PC (for now)
 - ~1 GB of free disk space (it makes a separate modded copy of the game)
 
 ---
 
-## Step 1 - Downgrade Among Us (do this)
-
-The mod needs Among Us **v17.3**, not the latest version. **You have to switch this in Steam yourself.**
-(as of 7-11-2026)
-
-1. Open Steam and go to your **Library**
-2. **Right-click** Among Us -> **Properties**
-3. Click the **Beta** tab
-4. In the dropdown, select **`public_previous`**
-5. Wait for Steam to finish updating the game
-
-Yay you did it.
-
----
-
-## Step 2 Run the installer (Wow)
+## Step 1 Run the installer (Wow)
 
 1. Download **`Install-TOU-Mira.bat`**
 2. **Double-click it**
 3. Answer the questions as they come up (see below)
 
-You'll pick **Install** the first time. The installer will:
+Hit **Install** the first time. The installer will:
 
+- Show you how to downgrade your among version
 - Find your Among Us folder (or let you point it to the right one)
 - Make a **separate modded copy**, your normal Among Us is never touched (other than downgrading it)
 - Let you choose which mod version to install
@@ -55,6 +41,8 @@ When it's done, launch the game from the **"Among Us (TOU Mira)"** Desktop short
 TOU:Mira is **client side**, so **everyone in the lobby must be on the same mod version**, or you will get kicked. /:
 
 The installer will ask you for what version you want, so make sure you're friends have basic communication skills!
+
+Your friends don't need to add the mod via MiraDroppper but it will be easier! (;
 
 ---
 
