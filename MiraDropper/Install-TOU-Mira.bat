@@ -23,9 +23,86 @@ exit /b
 
 $ErrorActionPreference = "Stop"
 
-# ---------------------------------------------------------
+# Bump this by hand to match each MiraDropper release's version name (e.g. "v1.2.0" -> "1.2.0").
+$ScriptVersion = "2.0.0"
+$script:AutoConfirm = $false
+
+# =========================================================
+#  Storefront providers. Each entry is fully self-contained --
+#  adding support for a new storefront means adding one entry
+#  here, not touching Find-AmongUs / Install-ModFiles / Step 0.
+# =========================================================
+$Providers = @(
+    [PSCustomObject]@{
+        Id = "steam"
+        Name = "Steam"
+        AssetPattern = "steam-itch\.zip$"
+        DowngradeSteps = @(
+            "Right-click Among Us in your Steam library -> Properties",
+            "Go to the Betas tab",
+            "Select 'public_previous' from the dropdown",
+            "Wait for Steam to finish updating the game"
+        )
+        ManualFindSteps = @(
+            "In Steam: right-click Among Us -> Manage -> Browse Local Files.",
+            "Copy the folder path from the top of that File Explorer window."
+        )
+        FindCandidates = {
+            $steamRoot = $null
+            try {
+                $steamRoot = (Get-ItemProperty -Path "HKCU:\Software\Valve\Steam" -ErrorAction Stop).SteamPath
+                Log-Debug "Steam path from registry: $steamRoot"
+            } catch { Log-Debug "Couldn't read Steam path from registry." }
+
+            $roots = @()
+            if ($steamRoot) {
+                $vdf = Join-Path $steamRoot "steamapps\libraryfolders.vdf"
+                if (Test-Path $vdf) {
+                    Log-Debug "Reading library list from $vdf"
+                    $vdfContent = Get-Content $vdf -Raw
+                    $m2 = [regex]::Matches($vdfContent, '"path"\s+"([^"]+)"')
+                    foreach ($m in $m2) {
+                        $libPath = $m.Groups[1].Value -replace '\\\\', '\'
+                        $roots += (Join-Path $libPath "steamapps\common\Among Us")
+                        Log-Debug "  Steam library found: $libPath"
+                    }
+                }
+            }
+            $roots += @(
+                "C:\Program Files (x86)\Steam\steamapps\common\Among Us",
+                "C:\Program Files\Steam\steamapps\common\Among Us",
+                "D:\SteamLibrary\steamapps\common\Among Us",
+                "D:\Steam\steamapps\common\Among Us",
+                "E:\SteamLibrary\steamapps\common\Among Us"
+            )
+            return $roots
+        }
+    },
+    [PSCustomObject]@{
+        Id = "itch"
+        Name = "itch.io (EXPERIMENTAL)"
+        AssetPattern = "steam-itch\.zip$"
+        DowngradeSteps = @(
+            "Right-click Among Us in your itch library -> Manage -> 'Switch to another version...'",
+            "Select version 113 and let itch update the game",
+            "Launch Among Us once to confirm it's v17.3, then come back here"
+        )
+        ManualFindSteps = @(
+            "In the itch app: right-click Among Us -> Manage -> Open folder in explorer.",
+            "Copy the folder path from the top of that window."
+        )
+        FindCandidates = {
+            @(
+                (Join-Path $env:APPDATA "itch\apps\among-us"),
+                (Join-Path $env:LOCALAPPDATA "itch\apps\among-us")
+            )
+        }
+    }
+)
+
+# =========================================================
 #  Logging setup
-# ---------------------------------------------------------
+# =========================================================
 # Put the log right next to this .bat (the batch launcher passes its own folder).
 # Fall back to the current directory, then Desktop, if that ever isn't available.
 $logDir = $env:TOU_BAT_DIR
@@ -50,7 +127,12 @@ function Log-Info {
     "[INFO ] $msg" | Out-File -FilePath $LogPath -Append -Encoding UTF8
 }
 function Confirm-Action {
-    param([string]$msg)
+    param([string]$msg, [switch]$AlwaysAsk)
+    if ($script:AutoConfirm -and -not $AlwaysAsk) {
+        Log-Debug "(advanced mode off) auto-confirmed: $msg"
+        "[PROMPT] $msg -> AUTO-YES (advanced mode off)" | Out-File -FilePath $LogPath -Append -Encoding UTF8
+        return $true
+    }
     $resp = Read-Host "$msg (y/n)"
     while ($resp -notmatch '^[yYnN]$') { $resp = Read-Host "Please type y or n" }
     $yes = ($resp -match '^[yY]$')
@@ -66,41 +148,50 @@ function Abort-Clean {
     exit 0
 }
 
-# ---------------------------------------------------------
+# =========================================================
+#  Shared: remember the last-used paths across runs.
+#  Pure convenience cache -- any failure here must never
+#  break the actual install/update/remove flow.
+# =========================================================
+function Load-MiraConfig {
+    $path = Join-Path $env:LOCALAPPDATA "MiraDropper\config.json"
+    try {
+        if (Test-Path $path) { return (Get-Content $path -Raw | ConvertFrom-Json) }
+    } catch { Log-Debug "Couldn't read saved config, ignoring: $($_.Exception.Message)" }
+    return $null
+}
+function Save-MiraConfig {
+    param([string]$auPath, [string]$moddedPath)
+    try {
+        $dir = Join-Path $env:LOCALAPPDATA "MiraDropper"
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        [PSCustomObject]@{ AmongUsPath = $auPath; ModdedPath = $moddedPath; LastUpdated = (Get-Date -Format o) } |
+            ConvertTo-Json | Out-File -FilePath (Join-Path $dir "config.json") -Encoding UTF8 -Force
+    } catch { Log-Debug "Couldn't save config (non-critical): $($_.Exception.Message)" }
+}
+
+# =========================================================
 #  Shared: locate the Among Us install
-# ---------------------------------------------------------
+# =========================================================
 function Find-AmongUs {
     $auPath = $null
+    if ($script:MiraConfig -and $script:MiraConfig.AmongUsPath) {
+        $rememberedPath = $script:MiraConfig.AmongUsPath
+        if (Test-Path (Join-Path $rememberedPath "Among Us.exe")) {
+            Write-Host ""
+            Log-Info "Remembered from last time:" "Green"
+            Write-Host "  $rememberedPath"
+            if (Confirm-Action "Use the same Among Us folder as last time?") {
+                return $rememberedPath
+            }
+        } else {
+            Log-Debug "Remembered path no longer has Among Us.exe -- ignoring it: $rememberedPath"
+        }
+    }
     $doAuto = Confirm-Action "Want the script to auto-detect your Among Us folder? (n = you'll type the path yourself)"
     if ($doAuto) {
-        Log-Debug "Auto-detect selected. Reading Steam library folders..."
-        $steamRoot = $null
-        try {
-            $steamRoot = (Get-ItemProperty -Path "HKCU:\Software\Valve\Steam" -ErrorAction Stop).SteamPath
-            Log-Debug "Steam path from registry: $steamRoot"
-        } catch { Log-Debug "Couldn't read Steam path from registry." }
-
-        $searchRoots = @()
-        if ($steamRoot) {
-            $vdf = Join-Path $steamRoot "steamapps\libraryfolders.vdf"
-            if (Test-Path $vdf) {
-                Log-Debug "Reading library list from $vdf"
-                $vdfContent = Get-Content $vdf -Raw
-                $m2 = [regex]::Matches($vdfContent, '"path"\s+"([^"]+)"')
-                foreach ($m in $m2) {
-                    $libPath = $m.Groups[1].Value -replace '\\\\', '\'
-                    $searchRoots += (Join-Path $libPath "steamapps\common\Among Us")
-                    Log-Debug "  Steam library found: $libPath"
-                }
-            }
-        }
-        $searchRoots += @(
-            "C:\Program Files (x86)\Steam\steamapps\common\Among Us",
-            "C:\Program Files\Steam\steamapps\common\Among Us",
-            "D:\SteamLibrary\steamapps\common\Among Us",
-            "D:\Steam\steamapps\common\Among Us",
-            "E:\SteamLibrary\steamapps\common\Among Us"
-        )
+        Log-Debug "Auto-detect selected for provider: $($script:SelectedProvider.Name)"
+        $searchRoots = & $script:SelectedProvider.FindCandidates
         foreach ($p in ($searchRoots | Select-Object -Unique)) {
             Log-Debug "  Checking: $p"
             if (Test-Path (Join-Path $p "Among Us.exe")) { $auPath = $p; Log-Debug "  -> Found."; break }
@@ -115,8 +206,7 @@ function Find-AmongUs {
     if (-not $auPath) {
         Write-Host ""
         Write-Host "Let's set the folder manually." -ForegroundColor Yellow
-        Write-Host "In Steam: right-click Among Us -> Manage -> Browse Local Files."
-        Write-Host "Copy the folder path from the top of that File Explorer window."
+        foreach ($step in $script:SelectedProvider.ManualFindSteps) { Write-Host $step }
         Write-Host ""
         do {
             $auPath = (Read-Host "Paste the Among Us folder path").Trim('"').Trim()
@@ -128,10 +218,10 @@ function Find-AmongUs {
     return $auPath
 }
 
-# ---------------------------------------------------------
+# =========================================================
 #  Shared: wipe the old mod files (BepInEx + loader) so an
 #  update/reuse can't leave stale files behind. Game files stay.
-# ---------------------------------------------------------
+# =========================================================
 function Remove-OldMod {
     param([string]$moddedPath)
     Log-Debug "Wiping old mod files from $moddedPath (game files kept)."
@@ -152,14 +242,27 @@ function Remove-OldMod {
     }
 }
 
-# ---------------------------------------------------------
+# =========================================================
 #  Shared: pick a version, download, verify, extract.
 #  Assumes $moddedPath already exists and is ready to receive
 #  mod files. Handles the version menu, retry, stamp, shortcut,
 #  and launch. Used by BOTH Install and Update.
-# ---------------------------------------------------------
+# =========================================================
 function Install-ModFiles {
     param([string]$moddedPath)
+
+    # Sweep any stale staging dirs left behind by a previous interrupted run.
+    Get-ChildItem -Path $env:TEMP -Filter "MiraDropper-stage-*" -Directory -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+    # If a previous run got interrupted mid-overlay, the modded folder may have a
+    # half-applied mod. Clean it up before installing fresh.
+    $installMarker = Join-Path $moddedPath ".tou-mira-installing"
+    if (Test-Path $installMarker) {
+        Log-Info "Detected an incomplete mod install from a previous run in this folder. Cleaning up old mod files before reinstalling." "Yellow"
+        Remove-OldMod $moddedPath
+        Remove-Item $installMarker -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Host ""
     Log-Info "Fetching the recent Town of Us: Mira releases from GitHub..." "Cyan"
@@ -172,9 +275,10 @@ function Install-ModFiles {
         Abort-Clean "Check your internet connection and try again."
     }
 
+    $assetPattern = $script:SelectedProvider.AssetPattern
     $usable = @()
     foreach ($rel in $allReleases) {
-        $a = $rel.assets | Where-Object { $_.name -match "steam-itch\.zip$" } | Select-Object -First 1
+        $a = $rel.assets | Where-Object { $_.name -match $assetPattern } | Select-Object -First 1
         if ($a) {
             $usable += [PSCustomObject]@{
                 Tag = $rel.tag_name; Pre = $rel.prerelease; Asset = $a; Date = [datetime]$rel.published_at
@@ -183,7 +287,7 @@ function Install-ModFiles {
         if ($usable.Count -ge 5) { break }
     }
     if ($usable.Count -eq 0) {
-        Abort-Clean "Couldn't find any releases with a steam-itch.zip. Grab it manually from https://github.com/AU-Avengers/TOU-Mira/releases"
+        Abort-Clean "Couldn't find any releases matching '$assetPattern'. Grab it manually from https://github.com/AU-Avengers/TOU-Mira/releases"
     }
 
     Write-Host ""
@@ -196,6 +300,10 @@ function Install-ModFiles {
         } else {
             Write-Host "  [$($n+1)] $($usable[$n].Tag)$preTag   released $when"
         }
+    }
+    if ($script:SelectedProvider.Id -eq "itch") {
+        Write-Host ""
+        Write-Host "Tip: for itch.io, v1.6.2 or v1.6.3-beta2 are recommended (post-v17.4 instability)." -ForegroundColor Yellow
     }
     Write-Host ""
     Write-Host "Tip: TOU Mira is client-side, so EVERYONE in your lobby must be on the SAME version." -ForegroundColor Yellow
@@ -232,7 +340,7 @@ function Install-ModFiles {
         Abort-Clean "Okay, stopping before downloading anything."
     }
 
-    # --- Download with retry ---
+    # === Download with retry ---
     $tempZip = Join-Path $env:TEMP $zipName
     Log-Debug "Saving download to: $tempZip"
     $maxAttempts = 3; $attempt = 0; $downloaded = $false
@@ -264,7 +372,24 @@ function Install-ModFiles {
         Abort-Clean "Download failed after $maxAttempts tries. Check your connection (or GitHub status) and run the script again."
     }
 
-    # --- Verify + detect wrapper folder ---
+    # Checksum 
+    # github reports a sha256 digest for release assets; verify it when present.
+    # This is an independent check from the BepInEx folder check
+    if ($asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
+        $expectedHash = $Matches[1].ToLower()
+        Log-Debug "Verifying SHA-256 checksum against GitHub-reported digest..."
+        $actualHash = (Get-FileHash -Path $tempZip -Algorithm SHA256).Hash.ToLower()
+        if ($actualHash -ne $expectedHash) {
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            Log-Info "Checksum mismatch! Expected $expectedHash, got $actualHash." "Red"
+            Abort-Clean "The download looks corrupted or tampered with. Try running the script again."
+        }
+        Log-Info "Checksum verified." "Green"
+    } else {
+        Log-Debug "No 'digest' field on this asset -- skipping checksum check (BepInEx-presence check below still applies)."
+    }
+
+    # === Verify + detect wrapper folder ===
     # The steam-itch zip usually nests everything inside a single top folder
     # (e.g. "TouMirav1.6.3b2-x86-steam-itch/BepInEx/..."). We find BepInEx wherever
     # it lives and strip whatever comes before it, so files land at the game root.
@@ -284,7 +409,7 @@ function Install-ModFiles {
     else { Log-Debug "Zip has BepInEx at the root; no prefix to strip." }
     Log-Debug "Verified: BepInEx folder present in zip."
 
-    # --- Extract ---
+    # === Extract ===
     Write-Host ""
     Write-Host "Ready to INSTALL the mod files into:" -ForegroundColor Yellow
     Write-Host "  $moddedPath"
@@ -294,6 +419,10 @@ function Install-ModFiles {
         Log-Info "Downloaded zip is still in your Temp folder if you want it: $tempZip" "Cyan"
         Abort-Clean "Okay, stopping before any mod files were installed."
     }
+    # Extract into a temp staging dir first, not live into $moddedPath -- so an
+    # interrupted extraction never leaves the modded folder half-overwritten.
+    $stagePath = Join-Path $env:TEMP "MiraDropper-stage-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $stagePath -Force | Out-Null
     $entries = $zipArchive.Entries | Where-Object { $_.Name -ne "" }
     $totalEntries = $entries.Count
     Log-Info "Extracting $totalEntries files..." "Cyan"
@@ -306,7 +435,7 @@ function Install-ModFiles {
             $relPath = $relPath.Substring($stripPrefix.Length)
         }
         if ([string]::IsNullOrWhiteSpace($relPath)) { continue }  # skip the wrapper dir entry itself
-        $destPath = Join-Path $moddedPath $relPath
+        $destPath = Join-Path $stagePath $relPath
         $destDir = Split-Path $destPath -Parent
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destPath, $true)
@@ -317,13 +446,26 @@ function Install-ModFiles {
     }
     $zipArchive.Dispose()
     Write-Progress -Activity "Extracting mod files" -Completed
+
+    if (-not (Test-Path (Join-Path $stagePath "BepInEx"))) {
+        Remove-Item $stagePath -Recurse -Force -ErrorAction SilentlyContinue
+        Log-Info "Staged extraction didn't produce a BepInEx folder -- something went wrong." "Red"
+        Abort-Clean "Nothing was installed. Try running the script again."
+    }
+
+    # Commit: mark the folder as mid-install, overlay the staged files, then clear the marker.
+    # This keeps the risky window (touching the live modded folder) as short as possible.
+    "in-progress" | Out-File -FilePath $installMarker -Encoding UTF8 -Force
+    Copy-Item -Path (Join-Path $stagePath '*') -Destination $moddedPath -Recurse -Force
+    Remove-Item $installMarker -Force -ErrorAction SilentlyContinue
+    Remove-Item $stagePath -Recurse -Force -ErrorAction SilentlyContinue
     Log-Info "Install complete: $totalEntries files." "Green"
 
     $chosenTag | Out-File -FilePath $versionFile -Encoding UTF8 -Force
     Remove-Item $tempZip -Force
     Log-Debug "Wrote version stamp and removed temp zip."
 
-    # --- Shortcut ---
+    # === Shortcut ===
     Write-Host ""
     if (Confirm-Action "Create/refresh a Desktop shortcut named 'Among Us (TOU Mira)'?") {
         try {
@@ -338,7 +480,7 @@ function Install-ModFiles {
         } catch { Log-Info "Couldn't create the shortcut: $($_.Exception.Message)" "Yellow" }
     }
 
-    # --- Done ---
+    # === Done ===
     Write-Host ""
     Write-Host "=== Done! ===" -ForegroundColor Green
     Write-Host "Installed version: $chosenTag"
@@ -363,9 +505,9 @@ function Install-ModFiles {
     exit 0
 }
 
-# ---------------------------------------------------------
+# =========================================================
 #  Shared: warn if Among Us is running (with override)
-# ---------------------------------------------------------
+# =========================================================
 function Ensure-GameClosed {
     Log-Debug "Checking whether Among Us is currently running..."
     $auProcess = Get-Process -Name "Among Us" -ErrorAction SilentlyContinue
@@ -388,13 +530,38 @@ function Ensure-GameClosed {
     } else { Log-Debug "Among Us not running. Good." }
 }
 
+# =========================================================
+#  Shared: check whether a newer MiraDropper is available.
+#  Notify-only -- never touches the running script file.
+# =========================================================
+function Test-ForNewerScript {
+    try {
+        $headers = @{ "User-Agent" = "PowerShell" }
+        $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/Stanfoc/MiraDropper/releases/latest" -Headers $headers -TimeoutSec 5
+        $latestVerText = ($latest.name -replace '^[vV]\s*', '').Trim()
+        $latestVer = [version]$latestVerText
+        $currentVer = [version]$ScriptVersion
+        if ($latestVer -gt $currentVer) {
+            Write-Host ""
+            Log-Info "A newer MiraDropper is available: $($latest.name) (you have v$ScriptVersion)." "Yellow"
+            Write-Host "  Get it here: $($latest.html_url)" -ForegroundColor Yellow
+        } else {
+            Log-Debug "MiraDropper is up to date (v$ScriptVersion)."
+        }
+    } catch {
+        Log-Debug "Self-update check skipped: $($_.Exception.Message)"
+    }
+}
+
 Write-Host "=== MiraDropper - Town of Us: Mira Tool ===" -ForegroundColor Cyan
 Write-Host ""
 Log-Debug "Log file created at $LogPath"
+Test-ForNewerScript
+$script:MiraConfig = Load-MiraConfig
 
-# ---------------------------------------------------------
+# =========================================================
 #  Mode select
-# ---------------------------------------------------------
+# =========================================================
 Write-Host "What do you want to do?" -ForegroundColor Cyan
 Write-Host "  [1] Install   - fresh setup (copies the game, then installs the mod)"
 Write-Host "  [2] Update    - refresh the mod in an existing modded folder (no re-copy)"
@@ -402,6 +569,21 @@ Write-Host "  [3] Remove    - uninstall the mod / delete the modded copy"
 $mode = Read-Host "Choose 1, 2, or 3"
 while ($mode -notmatch '^[123]$') { $mode = Read-Host "Please type 1, 2, or 3" }
 Log-Debug "Mode selected: $mode"
+
+$useAdvancedMode = Confirm-Action "Use advanced mode for this run? (autoconfirm prompts but destructive actions still ask)"
+$script:AutoConfirm = -not $useAdvancedMode
+
+Write-Host ""
+Write-Host "Which storefront is Among Us on?" -ForegroundColor Cyan
+for ($p = 0; $p -lt $Providers.Count; $p++) {
+    Write-Host "  [$($p + 1)] $($Providers[$p].Name)"
+}
+$providerChoice = Read-Host "Choose a number (1-$($Providers.Count))"
+while ($providerChoice -notmatch '^\d+$' -or [int]$providerChoice -lt 1 -or [int]$providerChoice -gt $Providers.Count) {
+    $providerChoice = Read-Host "Please type a number from the list (1-$($Providers.Count))"
+}
+$script:SelectedProvider = $Providers[[int]$providerChoice - 1]
+Log-Debug "Provider selected: $($script:SelectedProvider.Name)"
 
 # =========================================================
 #  MODE 3: REMOVE
@@ -418,7 +600,7 @@ if ($mode -eq "3") {
     Write-Host "This will DELETE the modded folder:" -ForegroundColor Yellow
     Write-Host "  $moddedPath"
     Write-Host "Your original (vanilla) Among Us install will NOT be touched."
-    if (-not (Confirm-Action "Are you sure you want to delete the modded copy?")) {
+    if (-not (Confirm-Action "Are you sure you want to delete the modded copy?" -AlwaysAsk)) {
         Abort-Clean "Okay, left everything in place."
     }
     Ensure-GameClosed
@@ -427,14 +609,18 @@ if ($mode -eq "3") {
     Log-Info "Modded folder removed." "Green"
     $shortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "Among Us (TOU Mira).lnk"
     if (Test-Path $shortcutPath) {
-        if (Confirm-Action "Also remove the 'Among Us (TOU Mira)' desktop shortcut?") {
+        if (Confirm-Action "Also remove the 'Among Us (TOU Mira)' desktop shortcut?" -AlwaysAsk) {
             Remove-Item $shortcutPath -Force; Log-Info "Shortcut removed." "Green"
         }
     }
     Write-Host ""
     Write-Host "=== Remove complete! ===" -ForegroundColor Green
-    Write-Host "You can still play vanilla Among Us normally through Steam."
-    Write-Host "(Switch Steam's beta back to 'None' if you want the latest vanilla version.)" -ForegroundColor Cyan
+    Write-Host "You can still play vanilla Among Us normally through $($script:SelectedProvider.Name)."
+    if ($script:SelectedProvider.Id -eq "steam") {
+        Write-Host "(Switch Steam's beta back to 'None' if you want the latest vanilla version.)" -ForegroundColor Cyan
+    } else {
+        Write-Host "(Switch back to the latest version in $($script:SelectedProvider.Name) if you want the latest vanilla version.)" -ForegroundColor Cyan
+    }
     Read-Host "Press Enter to close this window"
     exit 0
 }
@@ -450,6 +636,7 @@ if ($mode -eq "2") {
     if (-not (Test-Path $moddedPath)) {
         Abort-Clean "No modded folder found at '$moddedPath'. Run this tool again and choose [1] Install first."
     }
+    Save-MiraConfig $auPath $moddedPath
     $stamp = Join-Path $moddedPath ".tou-mira-version.txt"
     if (Test-Path $stamp) {
         Log-Info "Currently installed: $((Get-Content $stamp -Raw).Trim())" "Cyan"
@@ -472,19 +659,30 @@ if ($mode -eq "2") {
 Write-Host ""
 Log-Info "=== Install mode ===" "Cyan"
 
-# Step 0: Confirm the Steam beta downgrade
+# Step 0: Confirm the downgrade (steps depend on the selected storefront)
 Write-Host ""
-Write-Host "Before this can work, you need to downgrade Among Us in Steam:" -ForegroundColor Yellow
-Write-Host "  1. Right-click Among Us in your Steam library -> Properties"
-Write-Host "  2. Go to the Betas tab"
-Write-Host "  3. Select 'public_previous' from the dropdown"
-Write-Host "  4. Wait for Steam to finish updating the game"
+Write-Host "Before this can work, you need to downgrade Among Us ($($script:SelectedProvider.Name)):" -ForegroundColor Yellow
+$stepNum = 0
+foreach ($step in $script:SelectedProvider.DowngradeSteps) {
+    $stepNum++
+    Write-Host "  $stepNum. $step"
+}
 Write-Host ""
-if (-not (Confirm-Action "Have you done the downgrade already?")) {
+# Steam only: offer to jump straight to the right Properties page. We deliberately don't
+# automate the actual beta-branch switch (editing Steam's appmanifest .acf directly is an
+# unofficial technique that risks Steam treating the depot as inconsistent and forcing a
+# disruptive re-verify) -- this is just a zero-risk navigation shortcut.
+if ($script:SelectedProvider.Id -eq "steam") {
+    if (Confirm-Action "Want me to open Steam to the right page for you?") {
+        try { Start-Process "steam://gameproperties/945360" }
+        catch { Log-Debug "Couldn't launch Steam URI: $($_.Exception.Message)" }
+    }
+}
+if (-not (Confirm-Action "Have you done the downgrade already?" -AlwaysAsk)) {
     Abort-Clean "No worries -- go do that first, then run this again."
 }
 Write-Host ""
-Log-Debug "Beta downgrade confirmed."
+Log-Debug "Downgrade confirmed for provider: $($script:SelectedProvider.Name)"
 
 Ensure-GameClosed
 
@@ -495,6 +693,20 @@ Log-Info "Using Among Us at: $auPath" "Green"
 $parentDir = Split-Path $auPath -Parent
 $moddedPath = Join-Path $parentDir "Among Us - TOU Mira"
 Log-Debug "Modded install target: $moddedPath"
+Save-MiraConfig $auPath $moddedPath
+
+$stagingCopyPath = "$moddedPath.partial"
+if (Test-Path $stagingCopyPath) {
+    Write-Host ""
+    Write-Host "It looks like a previous install was interrupted and leftover partial copy was found:" -ForegroundColor Yellow
+    Write-Host "  $stagingCopyPath"
+    if (Confirm-Action "Delete this leftover partial copy and start the game-file copy fresh?" -AlwaysAsk) {
+        Remove-Item $stagingCopyPath -Recurse -Force
+        Log-Info "Removed leftover partial copy." "Green"
+    } else {
+        Abort-Clean "leaving the leftover partial copy in place. Run again when ready."
+    }
+}
 
 $skipCopy = $false
 if (Test-Path $moddedPath) {
@@ -514,9 +726,9 @@ if (Test-Path $moddedPath) {
             Remove-OldMod $moddedPath
         }
         "2" {
-            if (Confirm-Action "Really DELETE the whole modded folder and re-copy?") {
+            if (Confirm-Action "Really DELETE the whole modded folder and re-copy?" -AlwaysAsk) {
                 Log-Info "Deleting old modded folder..." "Yellow"; Remove-Item $moddedPath -Recurse -Force
-            } else { Abort-Clean "Okay, leaving it as-is and stopping." }
+            } else { Abort-Clean "Okay, leaving it as is and stopping." }
         }
         "3" { Abort-Clean "Cancelled." }
     }
@@ -555,12 +767,14 @@ if (-not $skipCopy) {
         Abort-Clean "Okay, stopping before any files were copied."
     }
     Log-Info "Copying $totalFiles files (~$totalMB MB)..." "Cyan"
-    New-Item -ItemType Directory -Path $moddedPath -Force | Out-Null
+    # Copy into a staging dir first, then commit via rename -- so an interrupted
+    # copy never leaves a half-written folder sitting under the final name.
+    New-Item -ItemType Directory -Path $stagingCopyPath -Force | Out-Null
     $i = 0
     foreach ($file in $allFiles) {
         $i++
         $relativePath = $file.FullName.Substring($auPath.Length).TrimStart('\')
-        $destPath = Join-Path $moddedPath $relativePath
+        $destPath = Join-Path $stagingCopyPath $relativePath
         $destDir = Split-Path $destPath -Parent
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
         Copy-Item -Path $file.FullName -Destination $destPath -Force
@@ -570,6 +784,8 @@ if (-not $skipCopy) {
         }
     }
     Write-Progress -Activity "Copying Among Us files" -Completed
+    Log-Debug "Copy finished in staging; committing to final path..."
+    Move-Item -Path $stagingCopyPath -Destination $moddedPath -Force
     Log-Info "Copy complete: $totalFiles files." "Green"
 }
 
