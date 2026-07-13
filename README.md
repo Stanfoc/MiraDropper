@@ -12,7 +12,7 @@ MiraDropper is a single double-click file that installs [Town of Us: Mira](https
 
 ## Requirements
 
-- **Among Us on Steam or Itch (experimental Itch.io may have bugs please make a issue if you find them) **
+- **Among Us on Steam or Itch (experimental Itch.io may have bugs please make a issue if you find them)**
 - A Windows PC (for now)
 - ~1 GB of free disk space (it makes a separate modded copy of the game)
 
